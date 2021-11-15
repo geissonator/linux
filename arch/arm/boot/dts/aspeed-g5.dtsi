@@ -393,12 +393,14 @@
 				compatible = "aspeed,ast2500-wdt";
 				reg = <0x1e785000 0x20>;
 				clocks = <&syscon ASPEED_CLK_APB>;
+                interrupts = <27>;
 			};
 
 			wdt2: watchdog@1e785020 {
 				compatible = "aspeed,ast2500-wdt";
 				reg = <0x1e785020 0x20>;
 				clocks = <&syscon ASPEED_CLK_APB>;
+                interrupts = <27>;
 			};
 
 			wdt3: watchdog@1e785040 {
@@ -406,6 +408,7 @@
 				reg = <0x1e785040 0x20>;
 				clocks = <&syscon ASPEED_CLK_APB>;
 				status = "disabled";
+                interrupts = <27>;
 			};
 
 			pwm_tacho: pwm-tacho-controller@1e786000 {

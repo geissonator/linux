@@ -5,36 +5,54 @@
  * Joel Stanley <joel@jms.id.au>
  */
 
+#include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
 
-struct aspeed_wdt {
-	struct watchdog_device	wdd;
-	void __iomem		*base;
-	u32			ctrl;
-};
+
 
 struct aspeed_wdt_config {
 	u32 ext_pulse_width_mask;
+    u32 irq_match_mask;
+    u32 irq_status;
+};
+
+struct aspeed_wdt {
+    struct watchdog_device      wdd;
+    void __iomem            *base;
+    u32             ctrl;
+    const struct aspeed_wdt_config  *config;
 };
 
 static const struct aspeed_wdt_config ast2400_config = {
 	.ext_pulse_width_mask = 0xff,
+    .irq_match_mask = 0,
+    .irq_status = BIT(0),
 };
 
 static const struct aspeed_wdt_config ast2500_config = {
 	.ext_pulse_width_mask = 0xfffff,
+    .irq_match_mask = GENMASK(31, 12),
+    .irq_status = BIT(2),
+};
+
+static const struct aspeed_wdt_config ast2600_config = {
+    .ext_pulse_width_mask = 0xfffff,
+    .irq_match_mask = GENMASK(31, 10),
+    .irq_status = BIT(2),
 };
 
 static const struct of_device_id aspeed_wdt_of_table[] = {
 	{ .compatible = "aspeed,ast2400-wdt", .data = &ast2400_config },
 	{ .compatible = "aspeed,ast2500-wdt", .data = &ast2500_config },
-	{ .compatible = "aspeed,ast2600-wdt", .data = &ast2500_config },
+	{ .compatible = "aspeed,ast2600-wdt", .data = &ast2600_config },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, aspeed_wdt_of_table);
@@ -238,6 +256,18 @@ static const struct watchdog_info aspeed_wdt_info = {
 	.identity	= KBUILD_MODNAME,
 };
 
+static irqreturn_t aspeed_wdt_irq(int irq, void *dev_id)
+{
+        struct aspeed_wdt *wdt = dev_id;
+        int sts;
+
+        sts = readl(wdt->base + WDT_TIMEOUT_STATUS);
+        if (sts & wdt->config->irq_status)
+                panic("Watchdog pre-timeout IRQ delivered");
+
+        return IRQ_NONE;
+}
+
 static int aspeed_wdt_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -322,9 +352,10 @@ static int aspeed_wdt_probe(struct platform_device *pdev)
 
 	if ((of_device_is_compatible(np, "aspeed,ast2500-wdt")) ||
 		(of_device_is_compatible(np, "aspeed,ast2600-wdt"))) {
-		u32 reg = readl(wdt->base + WDT_RESET_WIDTH);
+        u32 reg;
 
-		reg &= config->ext_pulse_width_mask;
+		reg = readl(wdt->base + WDT_RESET_WIDTH);
+        reg &= config->ext_pulse_width_mask;
 		if (of_property_read_bool(np, "aspeed,ext-push-pull"))
 			reg |= WDT_PUSH_PULL_MAGIC;
 		else
@@ -367,6 +398,28 @@ static int aspeed_wdt_probe(struct platform_device *pdev)
 		writel(duration - 1, wdt->base + WDT_RESET_WIDTH);
 	}
 
+    if (config->irq_match_mask) {
+            u32 timeout;
+
+            if (!of_property_read_u32(np, "aspeed,pre-timeout-irq-us", &timeout)) {
+                    int irq;
+                    int reg;
+
+                    irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
+                    ret = devm_request_irq(&pdev->dev, irq, aspeed_wdt_irq, IRQF_SHARED,
+                                           dev_name(&pdev->dev), wdt);
+                    if (ret) {
+                            dev_err(&pdev->dev, "IRQ request failed: %d\n", ret);
+                            return ret;
+                    }
+
+                    reg = readl(wdt->base + WDT_CTRL);
+                    reg &= ~config->irq_match_mask;
+                    reg |= (timeout << __ffs(config->irq_match_mask)) | WDT_CTRL_WDT_INTR;
+                    writel(reg, wdt->base + WDT_CTRL);
+            }
+    }
+
 	status = readl(wdt->base + WDT_TIMEOUT_STATUS);
 	if (status & WDT_TIMEOUT_STATUS_BOOT_SECONDARY) {
 		wdt->wdd.bootstatus = WDIOF_CARDRESET;
@@ -376,6 +429,7 @@ static int aspeed_wdt_probe(struct platform_device *pdev)
 			wdt->wdd.groups = bswitch_groups;
 	}
 
+    wdt->config = config;
 	dev_set_drvdata(dev, wdt);
 
 	return devm_watchdog_register_device(dev, &wdt->wdd);
