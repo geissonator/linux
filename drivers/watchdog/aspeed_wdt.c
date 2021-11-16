@@ -16,8 +16,6 @@
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
 
-
-
 struct aspeed_wdt_config {
 	u32 ext_pulse_width_mask;
     u32 irq_match_mask;
@@ -339,6 +337,25 @@ static int aspeed_wdt_probe(struct platform_device *pdev)
 	if (of_property_read_bool(np, "aspeed,alt-boot"))
 		wdt->ctrl |= WDT_CTRL_BOOT_SECONDARY;
 
+	if (config->irq_match_mask) {
+		u32 timeout;
+
+		if (!of_property_read_u32(np, "aspeed,pre-timeout-irq-us", &timeout)) {
+			int irq;
+
+			irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
+			ret = devm_request_irq(&pdev->dev, irq, aspeed_wdt_irq, IRQF_SHARED,
+					       dev_name(&pdev->dev), wdt);
+			if (ret) {
+				dev_err(&pdev->dev, "IRQ request failed: %d\n", ret);
+				return ret;
+			}
+
+			wdt->ctrl &= ~config->irq_match_mask;
+			wdt->ctrl |= (timeout & config->irq_match_mask) | WDT_CTRL_WDT_INTR;
+		}
+	}
+
 	if (readl(wdt->base + WDT_CTRL) & WDT_CTRL_ENABLE)  {
 		/*
 		 * The watchdog is running, but invoke aspeed_wdt_start() to
@@ -397,28 +414,6 @@ static int aspeed_wdt_probe(struct platform_device *pdev)
 		 */
 		writel(duration - 1, wdt->base + WDT_RESET_WIDTH);
 	}
-
-    if (config->irq_match_mask) {
-            u32 timeout;
-
-            if (!of_property_read_u32(np, "aspeed,pre-timeout-irq-us", &timeout)) {
-                    int irq;
-                    int reg;
-
-                    irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
-                    ret = devm_request_irq(&pdev->dev, irq, aspeed_wdt_irq, IRQF_SHARED,
-                                           dev_name(&pdev->dev), wdt);
-                    if (ret) {
-                            dev_err(&pdev->dev, "IRQ request failed: %d\n", ret);
-                            return ret;
-                    }
-
-                    reg = readl(wdt->base + WDT_CTRL);
-                    reg &= ~config->irq_match_mask;
-                    reg |= (timeout << __ffs(config->irq_match_mask)) | WDT_CTRL_WDT_INTR;
-                    writel(reg, wdt->base + WDT_CTRL);
-            }
-    }
 
 	status = readl(wdt->base + WDT_TIMEOUT_STATUS);
 	if (status & WDT_TIMEOUT_STATUS_BOOT_SECONDARY) {

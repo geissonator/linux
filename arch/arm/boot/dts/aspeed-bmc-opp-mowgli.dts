@@ -649,7 +649,7 @@
 
 &wdt2 {
 	aspeed,alt-boot;
-    aspeed,pre-timeout-irq-us = <500000>;
+    aspeed,pre-timeout-irq-us = <1000000>;
 };
 
 &ibt {
